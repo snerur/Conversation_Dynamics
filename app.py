@@ -1119,22 +1119,37 @@ def build_pdf_report(analysis_text: str, metrics: dict,
         def header(self):
             if self.page_no() == 1:
                 return
+            # Always start from a known position so the cursor never drifts.
+            self.set_xy(self.l_margin, 6)
             self.set_font("Helvetica", "I", 8)
             self.set_text_color(140, 140, 140)
-            self.cell(0, 7,
-                      "Conversational Dynamics in Embedding Space - Analysis Report",
-                      align="R")
+            self.cell(
+                0, 7,
+                "Conversational Dynamics in Embedding Space - Analysis Report",
+                align="R",
+                new_x="LMARGIN",   # ← reset x to left margin after cell
+                new_y="NEXT",      # ← move to next line
+            )
             self.set_draw_color(200, 200, 200)
-            self.line(10, self.get_y() + 1, 200, self.get_y() + 1)
-            self.ln(4)
+            self.line(self.l_margin, self.get_y(),
+                      self.w - self.r_margin, self.get_y())
+            self.ln(3)
+            # Restore defaults so content rendering starts cleanly.
+            self.set_text_color(0, 0, 0)
+            self.set_x(self.l_margin)
 
         def footer(self):
             self.set_y(-14)
+            self.set_x(self.l_margin)
             self.set_font("Helvetica", "I", 8)
             self.set_text_color(150, 150, 150)
-            self.cell(0, 8,
-                      f"Page {self.page_no()}  |  Generated {datetime.date.today()}",
-                      align="C")
+            self.cell(
+                0, 8,
+                f"Page {self.page_no()}  |  Generated {datetime.date.today()}",
+                align="C",
+                new_x="LMARGIN",
+                new_y="NEXT",
+            )
 
     pdf = ReportPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
@@ -1227,46 +1242,75 @@ def build_pdf_report(analysis_text: str, metrics: dict,
              new_x="LMARGIN", new_y="NEXT", fill=True)
     pdf.ln(3)
 
-    _plain_terms_next = False
+    # Safe multi_cell wrapper: always resets x to left margin first and
+    # catches any rendering exception so one bad line never aborts the PDF.
+    def _mc(h: float, text: str, **kwargs) -> None:
+        pdf.set_x(pdf.l_margin)
+        try:
+            pdf.multi_cell(0, h, text, **kwargs)
+        except Exception:
+            # fallback: strip kwargs that might cause issues and retry plain
+            pdf.set_x(pdf.l_margin)
+            try:
+                pdf.multi_cell(0, h, text[:500])
+            except Exception:
+                pass
+        finally:
+            pdf.set_x(pdf.l_margin)  # guarantee left margin after render
+
+    _in_plain_terms = False
     pdf.set_text_color(30, 30, 30)
+
     for raw in analysis_text.split("\n"):
         line = raw.rstrip()
-        if not line:
+        clean = _s(line.replace("**", "").strip())
+
+        if not line.strip():
             pdf.ln(2)
-            _plain_terms_next = False
+            _in_plain_terms = False
+
         elif line.startswith("## "):
             pdf.ln(3)
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_text_color(25, 25, 90)
-            pdf.multi_cell(0, 7, _s(line[3:]))
+            _mc(7, _s(line[3:]))
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(30, 30, 30)
+            _in_plain_terms = False
+
         elif line.startswith("### "):
             pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(0, 6, _s(line[4:]))
+            _mc(6, _s(line[4:]))
             pdf.set_font("Helvetica", "", 10)
-        elif line.lower().startswith(("**in plain terms", "in plain terms")):
-            # Highlight the "In plain terms" callout box
-            pdf.ln(1)
-            pdf.set_fill_color(255, 248, 220)
+
+        elif any(kw in line.lower() for kw in
+                 ("in plain terms", "plain language", "everyday terms",
+                  "plain terms", "in simple terms")):
+            # ── "In plain terms" callout ────────────────────────────────────
+            _in_plain_terms = True
+            pdf.ln(2)
+            pdf.set_fill_color(255, 248, 210)
             pdf.set_font("Helvetica", "B", 9)
-            pdf.set_text_color(100, 70, 0)
-            clean = _s(line.replace("**", "").strip())
-            pdf.multi_cell(0, 6, f"  {clean}", fill=True)
+            pdf.set_text_color(110, 75, 0)
+            label = clean if clean else "In plain terms"
+            _mc(6, f"  {label}", fill=True)
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(30, 30, 30)
-            _plain_terms_next = True
-        elif _plain_terms_next and line.strip():
-            # Body of the plain-terms box
-            pdf.set_fill_color(255, 252, 235)
+
+        elif _in_plain_terms and line.strip():
+            # Body lines of the callout box (until next blank line or ##)
+            pdf.set_fill_color(255, 253, 230)
             pdf.set_text_color(80, 60, 0)
-            pdf.multi_cell(0, 5.5, _s(f"  {line.replace('**','')}"), fill=True)
+            _mc(5.5, f"  {_s(line.replace('**', ''))}", fill=True)
             pdf.set_text_color(30, 30, 30)
-        elif line.startswith(("- ", "* ", "* ")):
-            pdf.multi_cell(0, 5.5, _s(f"  * {line[2:]}"))
+
+        elif line.lstrip().startswith(("- ", "* ", "\u2022 ")):
+            # Bullet points (-, *, •)
+            body = line.lstrip()[2:]
+            _mc(5.5, f"  * {_s(body)}")
+
         else:
-            clean = _s(line.replace("**", ""))
-            pdf.multi_cell(0, 5.5, clean)
+            _mc(5.5, _s(line.replace("**", "")))
 
     # ── Figures with captions ─────────────────────────────────────────────────
     figure_meta = [
@@ -1336,13 +1380,16 @@ def build_pdf_report(analysis_text: str, metrics: dict,
             continue
         pdf.add_page()
         # Caption
+        pdf.set_x(pdf.l_margin)
         pdf.set_font("Helvetica", "B", 10)
         pdf.set_text_color(40, 40, 100)
         pdf.multi_cell(0, 7, _s(caption))
         # Plain-language description
+        pdf.set_x(pdf.l_margin)
         pdf.set_font("Helvetica", "I", 9)
         pdf.set_text_color(80, 80, 80)
         pdf.multi_cell(0, 5.5, _s(description))
+        pdf.set_x(pdf.l_margin)
         pdf.ln(3)
         # Image
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
