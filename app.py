@@ -635,13 +635,506 @@ def fig_stationary(all_emb_list: list[np.ndarray]) -> go.Figure:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Analysis & Report helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def collect_all_metrics() -> dict:
+    """Gather every computed metric into a flat dict for the LLM prompt and PDF."""
+    convs = st.session_state.conversations
+    if not convs:
+        return {}
+
+    all_emb   = [c["embeddings"] for c in convs]
+    shuf_emb  = shuffled_baseline(convs)
+    noise_emb = noise_baseline(convs)
+
+    m: dict = {
+        "model":           model_name,
+        "encoder":         st.session_state.encoder_name or "N/A",
+        "temperature":     temperature,
+        "n_conversations": len(convs),
+        "n_turns_avg":     int(np.mean([len(c["embeddings"]) for c in convs])),
+    }
+
+    # Step distances
+    real_d  = np.concatenate([step_cosine_distances(e) for e in all_emb])
+    shuf_d  = np.concatenate([step_cosine_distances(e) for e in shuf_emb])
+    noise_d = np.concatenate([step_cosine_distances(e) for e in noise_emb])
+    m.update(real_step_mean=f"{real_d.mean():.4f}", real_step_std=f"{real_d.std():.4f}",
+             shuf_step_mean=f"{shuf_d.mean():.4f}", noise_step_mean=f"{noise_d.mean():.4f}")
+
+    # Kernel / σ²
+    kv = estimate_kernel_variance(all_emb)
+    if kv:
+        m.update(mean_residual=f"{kv['mean_residual']:.4f}",
+                 mean_variance=f"{kv['mean_variance']:.4f}",
+                 framework_quality=("Tight (σ²<0.05)"   if kv["mean_variance"] < 0.05
+                                    else "Moderate (σ²<0.15)" if kv["mean_variance"] < 0.15
+                                    else "Loose (σ²≥0.15)"))
+    else:
+        m.update(mean_residual="N/A", mean_variance="N/A",
+                 framework_quality="N/A (insufficient data)")
+
+    # Markov test
+    mr = markov_test(all_emb)
+    if mr:
+        m.update(err_1step=f"{mr['err_1step']:.4f}", err_2step=f"{mr['err_2step']:.4f}",
+                 improvement_pct=f"{mr['improvement_pct']:.1f}")
+    else:
+        m.update(err_1step="N/A", err_2step="N/A", improvement_pct="N/A")
+
+    # Lyapunov
+    if st.session_state.paired_conv:
+        eA = st.session_state.paired_conv["conv_A"]["embeddings"]
+        eB = st.session_state.paired_conv["conv_B"]["embeddings"]
+        _, _, λ, _ = compute_lyapunov(eA, eB)
+        m.update(lyapunov=f"{λ:.4f}",
+                 lyapunov_dir="Diverging (λ>0)" if λ > 0 else "Converging (λ<0)")
+    else:
+        m.update(lyapunov="N/A (no paired conv)", lyapunov_dir="N/A")
+
+    # Stationary distribution
+    all_cat = np.vstack(all_emb)
+    pca3    = PCA(n_components=min(3, all_cat.shape[1], all_cat.shape[0] - 1))
+    proj3   = pca3.fit_transform(all_cat)
+    n_s     = min(150, len(all_cat))
+    idx_s   = np.random.default_rng(7).choice(len(all_cat), n_s, replace=False)
+    samp    = all_cat[idx_s]
+    pw      = 1.0 - samp @ samp.T
+    m.update(pca_var=f"{sum(pca3.explained_variance_ratio_):.1%}",
+             pca_std=f"{proj3.std():.4f}",
+             mean_pw_dist=f"{pw[np.triu_indices(n_s, k=1)].mean():.4f}")
+
+    # DMD (first conversation)
+    eigs = compute_dmd(all_emb[0], r=min(10, len(all_emb[0]) - 2))
+    if eigs is not None:
+        mag   = np.abs(eigs)
+        freqs = np.abs(np.angle(eigs)) / (2 * np.pi)
+        m.update(dmd_near_circle=f"{sum(0.9 < x < 1.1 for x in mag)}/{len(mag)}",
+                 dmd_mean_mag=f"{mag.mean():.4f}",
+                 dmd_dom_freq=f"{freqs.max():.4f}")
+    else:
+        m.update(dmd_near_circle="N/A", dmd_mean_mag="N/A", dmd_dom_freq="N/A")
+
+    # Baseline σ²
+    shuf_kv = estimate_kernel_variance(shuf_emb)
+    m.update(real_var=m["mean_variance"],
+             shuf_var=f"{shuf_kv['mean_variance']:.4f}" if shuf_kv else "N/A")
+
+    return m
+
+
+def _analysis_prompt(m: dict) -> str:
+    return f"""You are a dynamical systems researcher analyzing results from a proof-of-concept \
+study of LLM self-conversations in embedding space. The framework treats each conversation turn \
+as a point on a unit sphere in a high-dimensional embedding space, forming a discrete-time \
+trajectory that is studied with the tools of nonlinear dynamics.
+
+STUDY CONFIGURATION
+  Language model : {m.get('model')}
+  Temperature    : {m.get('temperature')}
+  Encoder        : {m.get('encoder')}
+  Conversations  : {m.get('n_conversations')},  avg turns each: {m.get('n_turns_avg')}
+
+MEASURED RESULTS
+
+1. KERNEL ESTIMATION  g(E) = E[E_{{n+1}} | E_n]  AND  CONDITIONAL VARIANCE σ²(E)
+   Mean prediction residual (cosine dist to true E_{{n+1}}) : {m.get('mean_residual')}
+   Mean conditional variance σ²(E)                         : {m.get('mean_variance')}
+   Framework quality assessment                            : {m.get('framework_quality')}
+   [Guide: σ²<0.05 = tight; 0.05–0.15 = moderate; >0.15 = loose / information loss]
+
+2. MARKOV APPROXIMATION TEST
+   1-step prediction error  E_n → E_{{n+1}}              : {m.get('err_1step')}
+   2-step prediction error  [E_{{n-1}},E_n] → E_{{n+1}} : {m.get('err_2step')}
+   Improvement from adding one lag of history            : {m.get('improvement_pct')}%
+   [Guide: >10% = non-Markovian; 3–10% = weak memory; <3% = Markov holds]
+
+3. LYAPUNOV EXPONENT  (sensitivity to initial conditions)
+   Estimated λ  : {m.get('lyapunov')}
+   Direction    : {m.get('lyapunov_dir')}
+   [Guide: λ>0 = diverging / chaotic-like;  λ<0 = converging / stable attractor]
+
+4. STATIONARY DISTRIBUTION  (long-term behavior)
+   PCA variance explained by top-3 PCs : {m.get('pca_var')}
+   Spread in PCA space (std)           : {m.get('pca_std')}
+   Mean pairwise cosine distance       : {m.get('mean_pw_dist')}
+
+5. DMD SPECTRUM  (Koopman operator approximation)
+   Modes near unit circle (0.9<|λ|<1.1) : {m.get('dmd_near_circle')}
+   Mean eigenvalue magnitude |λ|        : {m.get('dmd_mean_mag')}
+   Dominant frequency                   : {m.get('dmd_dom_freq')} cycles/turn
+
+6. BASELINE COMPARISON
+   Real conversations : mean step dist = {m.get('real_step_mean')},  σ² = {m.get('real_var')}
+   Shuffled null      : mean step dist = {m.get('shuf_step_mean')},  σ² = {m.get('shuf_var')}
+   Random walk null   : mean step dist = {m.get('noise_step_mean')}
+
+Please write a comprehensive, scientifically rigorous report with these exact sections:
+
+## 1. Framework Viability
+What does σ²(E) say about whether the embedding-space dynamical-systems approach is valid \
+here? Is the conditional variance small enough to trust downstream analyses?
+
+## 2. Markov Property
+Interpret the Markov test. Is E_n a sufficient statistic for predicting E_{{n+1}}? \
+Does the dynamics have memory, and what does that imply for the theoretical foundations?
+
+## 3. Dynamical Regime
+Characterize the regime based on the Lyapunov exponent. Is the system contracting toward \
+an attractor or showing sensitive dependence on initial conditions? What does this mean \
+for prompt sensitivity and reproducibility?
+
+## 4. Attractor Structure
+Analyze the stationary distribution. Does the conversation concentrate in a small region \
+(mode collapse / strong attractor) or explore broadly? What does the PCA variance explain \
+about the intrinsic dimensionality of the dynamics?
+
+## 5. Periodic and Coherent Structure
+Interpret the DMD spectrum. Are there modes near the unit circle suggesting stable \
+oscillatory dynamics? What does the dominant frequency imply about conversational rhythm?
+
+## 6. Baseline Comparison
+Compare the real dynamics against both null models. Is there genuine temporal structure, \
+or could the results be noise? Are the σ² values meaningfully different between real and \
+shuffled data?
+
+## 7. Overall Conclusions
+Synthesize all findings. What does this study reveal about the LLM's conversational \
+dynamics? How well does the embedding-space framework perform as an analytical tool?
+
+## 8. Recommended Next Steps
+Based on these results, what should be investigated next? Reference specific extensions \
+from the framework (persona variation, lag-embedding, cross-model comparison, bifurcation \
+analysis in temperature, human-in-the-loop, etc.) and explain why each is motivated by \
+the current results.
+
+Be specific and quantitative. Reference exact numbers throughout. Ground every \
+interpretation in dynamical systems theory.
+"""
+
+
+def generate_llm_analysis(m: dict) -> str | None:
+    """Call the configured LLM with the full analysis prompt."""
+    try:
+        import litellm
+        litellm.set_verbose = False
+        if api_key and provider in PROVIDER_ENV_KEYS:
+            os.environ[PROVIDER_ENV_KEYS[provider]] = api_key
+        resp = litellm.completion(
+            model=model_name,
+            messages=[
+                {"role": "system",
+                 "content": ("You are an expert in nonlinear dynamics and AI research. "
+                              "You write precise, quantitative scientific analyses that "
+                              "reference specific numbers and ground conclusions in theory.")},
+                {"role": "user", "content": _analysis_prompt(m)},
+            ],
+            temperature=0.3,
+            max_tokens=3500,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
+        st.error(f"LLM analysis error: {exc}")
+        return None
+
+
+def make_pdf_plots(convs: list, paired_conv) -> dict[str, bytes]:
+    """Render key matplotlib figures; return {name: PNG bytes} for PDF embedding."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import io
+
+    all_emb = [c["embeddings"] for c in convs]
+    plots: dict[str, bytes] = {}
+
+    def _save(fig) -> bytes:
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
+        plt.close(fig)
+        return buf.getvalue()
+
+    # 1 — PCA trajectory
+    try:
+        all_cat = np.vstack(all_emb)
+        pca     = PCA(n_components=min(2, all_cat.shape[1])).fit(all_cat)
+        fig, ax = plt.subplots(figsize=(9, 4.5))
+        for i, emb in enumerate(all_emb):
+            p = pca.transform(emb)
+            ax.plot(p[:, 0], p[:, 1] if p.shape[1] > 1 else np.zeros(len(p)),
+                    "o-", ms=4, lw=1.5, alpha=0.8, label=f"Conv {i+1}")
+            ax.plot(p[0, 0], p[0, 1] if p.shape[1] > 1 else 0,
+                    "*", ms=13, color=f"C{i}")
+        ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
+        ax.set_title("Embedding Trajectory — PCA 2D  (★ = start)")
+        ax.legend(fontsize=8, ncol=min(5, len(all_emb)))
+        plots["trajectory"] = _save(fig)
+    except Exception:
+        pass
+
+    # 2 — Step distances
+    try:
+        fig, ax = plt.subplots(figsize=(9, 4))
+        for i, emb in enumerate(all_emb):
+            d = step_cosine_distances(emb)
+            ax.plot(range(1, len(d)+1), d, "o-", ms=3, lw=1.5,
+                    alpha=0.8, label=f"Conv {i+1}")
+        ax.set_xlabel("Turn"); ax.set_ylabel("Cosine Distance")
+        ax.set_title("Step Distances Between Consecutive Turns")
+        ax.legend(fontsize=8, ncol=min(5, len(all_emb)))
+        plots["step_distances"] = _save(fig)
+    except Exception:
+        pass
+
+    # 3 — Recurrence plot
+    try:
+        R   = recurrence_matrix(all_emb[0])
+        fig, ax = plt.subplots(figsize=(5.5, 4.5))
+        im  = ax.imshow(R, cmap="RdBu_r", vmin=0, vmax=1, aspect="auto")
+        plt.colorbar(im, ax=ax, label="Cosine Distance")
+        n   = len(all_emb[0])
+        tks = list(range(0, n, max(1, n // 8)))
+        ax.set_xticks(tks); ax.set_yticks(tks)
+        ax.set_xticklabels([f"T{t+1}" for t in tks], fontsize=7)
+        ax.set_yticklabels([f"T{t+1}" for t in tks], fontsize=7)
+        ax.set_title("Recurrence Plot — Conversation 1")
+        plots["recurrence"] = _save(fig)
+    except Exception:
+        pass
+
+    # 4 — Lyapunov
+    if paired_conv:
+        try:
+            eA = paired_conv["conv_A"]["embeddings"]
+            eB = paired_conv["conv_B"]["embeddings"]
+            dists, log_d, λ, fit = compute_lyapunov(eA, eB)
+            turns = list(range(len(dists)))
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+            ax1.plot(turns, dists, "b-o", ms=4)
+            ax1.set_xlabel("Turn"); ax1.set_ylabel("Cosine Distance")
+            ax1.set_title("Paired Trajectory Distance")
+            ax2.scatter(turns, log_d, s=22, color="steelblue", alpha=0.8, label="log d(t)")
+            ax2.plot(turns, fit, "r--", lw=2, label=f"Fit  λ={λ:.4f}")
+            ax2.set_xlabel("Turn"); ax2.set_ylabel("log(distance)")
+            ax2.set_title("Lyapunov Fit")
+            ax2.legend(fontsize=9)
+            fig.suptitle(f"Lyapunov Exponent  λ ≈ {λ:.4f}  "
+                         f"({'diverging' if λ > 0 else 'converging'})", fontsize=11)
+            plots["lyapunov"] = _save(fig)
+        except Exception:
+            pass
+
+    # 5 — DMD spectrum
+    try:
+        eigs = compute_dmd(all_emb[0], r=min(10, len(all_emb[0]) - 2))
+        if eigs is not None:
+            theta   = np.linspace(0, 2*np.pi, 300)
+            fig, ax = plt.subplots(figsize=(5.5, 5))
+            ax.plot(np.cos(theta), np.sin(theta), "--", color="gray",
+                    lw=1, label="Unit circle")
+            mag = np.abs(eigs)
+            sc  = ax.scatter(eigs.real, eigs.imag, c=mag, cmap="viridis",
+                             s=70, zorder=5, edgecolors="white", lw=0.5)
+            plt.colorbar(sc, ax=ax, label="|λ|", shrink=0.85)
+            ax.set_aspect("equal")
+            ax.set_xlabel("Re(λ)"); ax.set_ylabel("Im(λ)")
+            ax.set_title("DMD Eigenvalue Spectrum")
+            ax.legend(fontsize=8)
+            plots["dmd"] = _save(fig)
+    except Exception:
+        pass
+
+    # 6 — Stationary distribution
+    try:
+        all_cat = np.vstack(all_emb)
+        pca2    = PCA(n_components=min(2, all_cat.shape[1])).fit(all_cat)
+        proj    = pca2.transform(all_cat)
+        labels  = [i for i, e in enumerate(all_emb) for _ in e]
+        fig, ax = plt.subplots(figsize=(6.5, 5))
+        sc = ax.scatter(proj[:, 0],
+                        proj[:, 1] if proj.shape[1] > 1 else np.zeros(len(proj)),
+                        c=labels, cmap="tab10", s=18, alpha=0.65)
+        plt.colorbar(sc, ax=ax, label="Conv #", shrink=0.85)
+        ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
+        ax.set_title("Stationary Distribution — All Turns in PCA Space")
+        plots["stationary"] = _save(fig)
+    except Exception:
+        pass
+
+    return plots
+
+
+def build_pdf_report(analysis_text: str, metrics: dict,
+                     plot_bytes: dict[str, bytes]) -> bytes:
+    """Assemble the full PDF using fpdf2."""
+    import datetime, tempfile
+    from fpdf import FPDF
+
+    class ReportPDF(FPDF):
+        def header(self):
+            if self.page_no() == 1:
+                return
+            self.set_font("Helvetica", "I", 8)
+            self.set_text_color(140, 140, 140)
+            self.cell(0, 7,
+                      "Conversational Dynamics in Embedding Space — Analysis Report",
+                      align="R")
+            self.set_draw_color(200, 200, 200)
+            self.line(10, self.get_y() + 1, 200, self.get_y() + 1)
+            self.ln(4)
+
+        def footer(self):
+            self.set_y(-14)
+            self.set_font("Helvetica", "I", 8)
+            self.set_text_color(150, 150, 150)
+            self.cell(0, 8,
+                      f"Page {self.page_no()}  ·  Generated {datetime.date.today()}",
+                      align="C")
+
+    pdf = ReportPDF()
+    pdf.set_auto_page_break(auto=True, margin=20)
+    pdf.add_page()
+
+    # ── Cover ────────────────────────────────────────────────────────────────
+    pdf.ln(10)
+    pdf.set_font("Helvetica", "B", 22)
+    pdf.set_text_color(25, 25, 90)
+    pdf.multi_cell(0, 12, "Conversational Dynamics\nin Embedding Space", align="C")
+    pdf.set_font("Helvetica", "", 13)
+    pdf.set_text_color(80, 80, 80)
+    pdf.cell(0, 8, "Proof-of-Concept Study — Analysis Report", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.set_font("Helvetica", "", 10)
+    pdf.cell(0, 6, f"Generated: {datetime.date.today()}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(10)
+
+    # ── Config box ────────────────────────────────────────────────────────────
+    pdf.set_fill_color(237, 237, 255)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(25, 25, 90)
+    pdf.cell(0, 8, "  Study Configuration", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_text_color(40, 40, 40)
+    for label, key in [("Language model", "model"), ("Temperature", "temperature"),
+                        ("Encoder", "encoder"), ("Conversations", "n_conversations"),
+                        ("Avg turns", "n_turns_avg")]:
+        pdf.cell(58, 6, f"    {label}:", border=0)
+        pdf.cell(0, 6, str(metrics.get(key, "N/A")), new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
+
+    # ── Metrics table ─────────────────────────────────────────────────────────
+    pdf.set_fill_color(237, 237, 255)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.set_text_color(25, 25, 90)
+    pdf.cell(0, 8, "  Measured Results Summary", new_x="LMARGIN", new_y="NEXT", fill=True)
+
+    rows = [
+        # (label, value, is_section_header)
+        ("Kernel Estimation", "", True),
+        ("Mean prediction residual",        metrics.get("mean_residual", "N/A"),     False),
+        ("Mean conditional variance σ²(E)", metrics.get("mean_variance", "N/A"),     False),
+        ("Framework quality",               metrics.get("framework_quality", "N/A"), False),
+        ("Markov Approximation Test", "", True),
+        ("1-step prediction error",         metrics.get("err_1step", "N/A"),         False),
+        ("2-step prediction error",         metrics.get("err_2step", "N/A"),         False),
+        ("History improvement",             f"{metrics.get('improvement_pct','N/A')}%", False),
+        ("Lyapunov Exponent", "", True),
+        ("Estimated λ",                     metrics.get("lyapunov", "N/A"),          False),
+        ("Direction",                       metrics.get("lyapunov_dir", "N/A"),      False),
+        ("Stationary Distribution", "", True),
+        ("PCA variance explained (top-3)",  metrics.get("pca_var", "N/A"),           False),
+        ("Spread — std in PCA space",       metrics.get("pca_std", "N/A"),           False),
+        ("Mean pairwise cosine dist",       metrics.get("mean_pw_dist", "N/A"),      False),
+        ("DMD Spectrum", "", True),
+        ("Modes near unit circle",          metrics.get("dmd_near_circle", "N/A"),   False),
+        ("Mean |λ|",                        metrics.get("dmd_mean_mag", "N/A"),      False),
+        ("Dominant frequency (cyc/turn)",   metrics.get("dmd_dom_freq", "N/A"),      False),
+        ("Baselines", "", True),
+        ("Real  — mean step dist",          metrics.get("real_step_mean", "N/A"),    False),
+        ("Shuffled null — mean step dist",  metrics.get("shuf_step_mean", "N/A"),    False),
+        ("Random walk — mean step dist",    metrics.get("noise_step_mean", "N/A"),   False),
+        ("Real σ²  vs  Shuffled σ²",
+         f"{metrics.get('real_var','N/A')}  vs  {metrics.get('shuf_var','N/A')}",    False),
+    ]
+    for label, value, is_hdr in rows:
+        if is_hdr:
+            pdf.set_fill_color(215, 215, 240)
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.set_text_color(25, 25, 90)
+            pdf.cell(0, 6, f"  {label}", new_x="LMARGIN", new_y="NEXT", fill=True)
+            pdf.set_font("Helvetica", "", 9)
+            pdf.set_text_color(40, 40, 40)
+        else:
+            pdf.cell(125, 5.5, f"    {label}", border="B")
+            pdf.cell(0,   5.5, value,          border="B",
+                     new_x="LMARGIN", new_y="NEXT")
+    pdf.ln(6)
+
+    # ── LLM Analysis ──────────────────────────────────────────────────────────
+    pdf.add_page()
+    pdf.set_fill_color(237, 237, 255)
+    pdf.set_font("Helvetica", "B", 13)
+    pdf.set_text_color(25, 25, 90)
+    pdf.cell(0, 9, "  LLM Analysis of Results", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.ln(3)
+
+    pdf.set_text_color(30, 30, 30)
+    for raw in analysis_text.split("\n"):
+        line = raw.rstrip()
+        if not line:
+            pdf.ln(2)
+        elif line.startswith("## "):
+            pdf.ln(3)
+            pdf.set_font("Helvetica", "B", 11)
+            pdf.set_text_color(25, 25, 90)
+            pdf.multi_cell(0, 7, line[3:])
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(30, 30, 30)
+        elif line.startswith("### "):
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.multi_cell(0, 6, line[4:])
+            pdf.set_font("Helvetica", "", 10)
+        elif line.startswith(("- ", "* ", "• ")):
+            pdf.multi_cell(0, 5.5, f"  \u2022 {line[2:]}")
+        else:
+            # Strip inline ** bold markers (fpdf2 doesn't render markdown)
+            clean = line.replace("**", "")
+            pdf.multi_cell(0, 5.5, clean)
+
+    # ── Figures ───────────────────────────────────────────────────────────────
+    figure_meta = [
+        ("trajectory",    "Figure 1: Embedding Trajectory in PCA Space",         190, 95),
+        ("step_distances","Figure 2: Step Distances Between Consecutive Turns",   190, 85),
+        ("recurrence",    "Figure 3: Recurrence Plot — Conversation 1",           120, 100),
+        ("dmd",           "Figure 4: DMD Eigenvalue Spectrum",                    110, 105),
+        ("lyapunov",      "Figure 5: Lyapunov Exponent Analysis",                 190, 82),
+        ("stationary",    "Figure 6: Stationary Distribution in PCA Space",       140, 108),
+    ]
+    for key, caption, w, h in figure_meta:
+        if key not in plot_bytes:
+            continue
+        pdf.add_page()
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.set_text_color(60, 60, 60)
+        pdf.cell(0, 7, caption, new_x="LMARGIN", new_y="NEXT")
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp.write(plot_bytes[key])
+            tmp_path = tmp.name
+        pdf.image(tmp_path, x=(210 - w) / 2, y=None, w=w)
+        os.unlink(tmp_path)
+
+    return bytes(pdf.output())
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # TABS
 # ──────────────────────────────────────────────────────────────────────────────
-tab_gen, tab_traj, tab_dyn, tab_base = st.tabs([
+tab_gen, tab_traj, tab_dyn, tab_base, tab_report = st.tabs([
     "🗣️ Generate Conversations",
     "📈 Trajectory Explorer",
     "🔬 Dynamical Analysis",
     "📊 Baselines",
+    "📋 Analysis & Report",
 ])
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1170,3 +1663,114 @@ with tab_base:
         "**Interpretation**: Real conversations should have lower σ²(E) than shuffled data "
         "(temporal structure matters) and different step-distance distributions vs the random walk."
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB 5 — LLM Analysis & PDF Report
+# ═══════════════════════════════════════════════════════════════════════════════
+with tab_report:
+    st.header("LLM Analysis & PDF Report")
+    st.caption(
+        "The LLM reads all measured dynamical quantities and writes a structured scientific "
+        "analysis. A PDF report with the analysis and all six key figures can then be downloaded."
+    )
+
+    if not st.session_state.conversations:
+        st.warning("Generate conversations in Tab 1 first.")
+        st.stop()
+
+    # ── Generate analysis ─────────────────────────────────────────────────────
+    if "analysis_text" not in st.session_state:
+        st.session_state.analysis_text = None
+    if "analysis_metrics" not in st.session_state:
+        st.session_state.analysis_metrics = None
+
+    col_btn1, col_btn2 = st.columns([1, 3])
+    run_analysis = col_btn1.button("🧠 Generate LLM Analysis", type="primary")
+
+    if run_analysis:
+        with st.spinner("Collecting metrics …"):
+            m = collect_all_metrics()
+        st.session_state.analysis_metrics = m
+
+        if not m:
+            st.error("Could not collect metrics — make sure conversations are generated.")
+        else:
+            st.info(
+                f"Sending results for **{m['n_conversations']} conversation(s)**, "
+                f"~{m['n_turns_avg']} turns each, to **{m['model']}** for analysis …"
+            )
+            with st.spinner("LLM is writing the analysis (this may take 20–40 s) …"):
+                analysis = generate_llm_analysis(m)
+            st.session_state.analysis_text = analysis
+
+    # ── Display analysis ──────────────────────────────────────────────────────
+    if st.session_state.analysis_text:
+        st.divider()
+        st.subheader("Analysis")
+
+        # Metrics snapshot used for this analysis
+        m = st.session_state.analysis_metrics
+        with st.expander("Metrics snapshot used for this analysis"):
+            metric_cols = st.columns(4)
+            snapshot = [
+                ("σ²(E)",             m.get("mean_variance")),
+                ("Framework quality", m.get("framework_quality")),
+                ("Markov improvement",f"{m.get('improvement_pct','N/A')}%"),
+                ("Lyapunov λ",        m.get("lyapunov")),
+                ("λ direction",       m.get("lyapunov_dir")),
+                ("DMD near-circle",   m.get("dmd_near_circle")),
+                ("Mean pw dist",      m.get("mean_pw_dist")),
+                ("PCA var (top-3)",   m.get("pca_var")),
+            ]
+            for i, (label, value) in enumerate(snapshot):
+                metric_cols[i % 4].metric(label, value)
+
+        st.markdown(st.session_state.analysis_text)
+        st.divider()
+
+        # ── PDF download ──────────────────────────────────────────────────────
+        st.subheader("Download PDF Report")
+        st.caption(
+            "The PDF includes the configuration summary, metrics table, full LLM analysis, "
+            "and six figures: PCA trajectory, step distances, recurrence plot, DMD spectrum, "
+            "Lyapunov divergence, and stationary distribution."
+        )
+
+        try:
+            from fpdf import FPDF  # check available
+            pdf_available = True
+        except ImportError:
+            pdf_available = False
+            st.error(
+                "`fpdf2` is not installed. Run `pip install fpdf2` then restart the app."
+            )
+
+        if pdf_available:
+            if st.button("📄 Build & Download PDF"):
+                with st.spinner("Rendering figures …"):
+                    plot_bytes = make_pdf_plots(
+                        st.session_state.conversations,
+                        st.session_state.paired_conv,
+                    )
+                with st.spinner("Assembling PDF …"):
+                    try:
+                        pdf_bytes = build_pdf_report(
+                            st.session_state.analysis_text,
+                            st.session_state.analysis_metrics,
+                            plot_bytes,
+                        )
+                        st.download_button(
+                            label="⬇️  Download Report PDF",
+                            data=pdf_bytes,
+                            file_name="conversational_dynamics_report.pdf",
+                            mime="application/pdf",
+                        )
+                        st.success(
+                            f"PDF ready — {len(pdf_bytes) // 1024} KB, "
+                            f"{len(plot_bytes)} figure(s) embedded."
+                        )
+                    except Exception as exc:
+                        st.error(f"PDF generation failed: {exc}")
+    else:
+        st.info("Click **Generate LLM Analysis** above to produce the analysis and enable the PDF download.")
