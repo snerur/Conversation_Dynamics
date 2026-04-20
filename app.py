@@ -725,10 +725,15 @@ def collect_all_metrics() -> dict:
 
 
 def _analysis_prompt(m: dict) -> str:
-    return f"""You are a dynamical systems researcher analyzing results from a proof-of-concept \
-study of LLM self-conversations in embedding space. The framework treats each conversation turn \
-as a point on a unit sphere in a high-dimensional embedding space, forming a discrete-time \
-trajectory that is studied with the tools of nonlinear dynamics.
+    return f"""You are a scientist analyzing the results of an experiment that studies how \
+AI language model conversations behave over time, using tools from the mathematics of \
+dynamical systems (the study of how things change and evolve).
+
+Imagine each conversation turn as a point in a vast, abstract space -- each point \
+represents the "meaning" of that turn as measured by a sentence-encoding model. \
+A conversation then becomes a path through that space. We are asking: does this path \
+have recognizable patterns? Does it drift? Does it repeat? Is it sensitive to how \
+it started?
 
 STUDY CONFIGURATION
   Language model : {m.get('model')}
@@ -738,79 +743,62 @@ STUDY CONFIGURATION
 
 MEASURED RESULTS
 
-1. KERNEL ESTIMATION  g(E) = E[E_{{n+1}} | E_n]  AND  CONDITIONAL VARIANCE σ²(E)
-   Mean prediction residual (cosine dist to true E_{{n+1}}) : {m.get('mean_residual')}
-   Mean conditional variance σ²(E)                         : {m.get('mean_variance')}
-   Framework quality assessment                            : {m.get('framework_quality')}
-   [Guide: σ²<0.05 = tight; 0.05–0.15 = moderate; >0.15 = loose / information loss]
+1. FRAMEWORK VIABILITY -- conditional variance sigma^2(E)
+   Mean prediction residual : {m.get('mean_residual')}
+   Mean conditional variance : {m.get('mean_variance')}
+   Framework quality : {m.get('framework_quality')}
+   [sigma^2 < 0.05 = tight framework; 0.05-0.15 = moderate; > 0.15 = loose]
 
-2. MARKOV APPROXIMATION TEST
-   1-step prediction error  E_n → E_{{n+1}}              : {m.get('err_1step')}
-   2-step prediction error  [E_{{n-1}},E_n] → E_{{n+1}} : {m.get('err_2step')}
-   Improvement from adding one lag of history            : {m.get('improvement_pct')}%
-   [Guide: >10% = non-Markovian; 3–10% = weak memory; <3% = Markov holds]
+2. MARKOV TEST -- does the current position predict the next?
+   1-step prediction error (current turn only) : {m.get('err_1step')}
+   2-step prediction error (current + previous turn) : {m.get('err_2step')}
+   Improvement from adding history : {m.get('improvement_pct')}%
+   [> 10% = memory matters; 3-10% = weak memory; < 3% = current position is enough]
 
-3. LYAPUNOV EXPONENT  (sensitivity to initial conditions)
-   Estimated λ  : {m.get('lyapunov')}
-   Direction    : {m.get('lyapunov_dir')}
-   [Guide: λ>0 = diverging / chaotic-like;  λ<0 = converging / stable attractor]
+3. LYAPUNOV EXPONENT -- sensitivity to starting conditions
+   Estimated lambda : {m.get('lyapunov')}
+   Direction : {m.get('lyapunov_dir')}
+   [lambda > 0 = diverging (small differences grow); lambda < 0 = converging (pulls toward fixed pattern)]
 
-4. STATIONARY DISTRIBUTION  (long-term behavior)
-   PCA variance explained by top-3 PCs : {m.get('pca_var')}
-   Spread in PCA space (std)           : {m.get('pca_std')}
-   Mean pairwise cosine distance       : {m.get('mean_pw_dist')}
+4. STATIONARY DISTRIBUTION -- where does the conversation end up?
+   PCA variance explained by top-3 directions : {m.get('pca_var')}
+   Spread in compressed space (std) : {m.get('pca_std')}
+   Mean pairwise distance between turns : {m.get('mean_pw_dist')}
 
-5. DMD SPECTRUM  (Koopman operator approximation)
-   Modes near unit circle (0.9<|λ|<1.1) : {m.get('dmd_near_circle')}
-   Mean eigenvalue magnitude |λ|        : {m.get('dmd_mean_mag')}
-   Dominant frequency                   : {m.get('dmd_dom_freq')} cycles/turn
+5. DMD SPECTRUM -- repeating patterns and rhythms
+   Modes near unit circle (stable oscillations) : {m.get('dmd_near_circle')}
+   Mean eigenvalue magnitude : {m.get('dmd_mean_mag')}
+   Dominant frequency : {m.get('dmd_dom_freq')} cycles/turn
 
-6. BASELINE COMPARISON
-   Real conversations : mean step dist = {m.get('real_step_mean')},  σ² = {m.get('real_var')}
-   Shuffled null      : mean step dist = {m.get('shuf_step_mean')},  σ² = {m.get('shuf_var')}
-   Random walk null   : mean step dist = {m.get('noise_step_mean')}
+6. BASELINE COMPARISON -- is there real structure, or just noise?
+   Real conversations : mean step = {m.get('real_step_mean')},  sigma^2 = {m.get('real_var')}
+   Shuffled (time-scrambled) : mean step = {m.get('shuf_step_mean')},  sigma^2 = {m.get('shuf_var')}
+   Random walk : mean step = {m.get('noise_step_mean')}
 
-Please write a comprehensive, scientifically rigorous report with these exact sections:
+Write a report with the eight sections below. Each section must contain two parts:
+
+PART A -- "Technical Analysis": a rigorous interpretation referencing the exact numbers \
+and grounding conclusions in dynamical systems theory.
+
+PART B -- "In Plain Terms": 2-4 sentences written so that anyone -- regardless of \
+mathematical background -- can understand the key finding. Use everyday analogies. \
+Avoid jargon. If a technical term is unavoidable, explain it in one phrase.
+
+Use these exact section headings:
 
 ## 1. Framework Viability
-What does σ²(E) say about whether the embedding-space dynamical-systems approach is valid \
-here? Is the conditional variance small enough to trust downstream analyses?
-
 ## 2. Markov Property
-Interpret the Markov test. Is E_n a sufficient statistic for predicting E_{{n+1}}? \
-Does the dynamics have memory, and what does that imply for the theoretical foundations?
-
 ## 3. Dynamical Regime
-Characterize the regime based on the Lyapunov exponent. Is the system contracting toward \
-an attractor or showing sensitive dependence on initial conditions? What does this mean \
-for prompt sensitivity and reproducibility?
-
 ## 4. Attractor Structure
-Analyze the stationary distribution. Does the conversation concentrate in a small region \
-(mode collapse / strong attractor) or explore broadly? What does the PCA variance explain \
-about the intrinsic dimensionality of the dynamics?
-
 ## 5. Periodic and Coherent Structure
-Interpret the DMD spectrum. Are there modes near the unit circle suggesting stable \
-oscillatory dynamics? What does the dominant frequency imply about conversational rhythm?
-
 ## 6. Baseline Comparison
-Compare the real dynamics against both null models. Is there genuine temporal structure, \
-or could the results be noise? Are the σ² values meaningfully different between real and \
-shuffled data?
-
 ## 7. Overall Conclusions
-Synthesize all findings. What does this study reveal about the LLM's conversational \
-dynamics? How well does the embedding-space framework perform as an analytical tool?
-
 ## 8. Recommended Next Steps
-Based on these results, what should be investigated next? Reference specific extensions \
-from the framework (persona variation, lag-embedding, cross-model comparison, bifurcation \
-analysis in temperature, human-in-the-loop, etc.) and explain why each is motivated by \
-the current results.
 
-Be specific and quantitative. Reference exact numbers throughout. Ground every \
-interpretation in dynamical systems theory.
+In section 8, suggest concrete follow-up investigations motivated by what these \
+specific numbers reveal. Reference techniques mentioned in the framework (persona \
+variation, lag-embedding, cross-model comparison, bifurcation analysis, etc.) and \
+explain in plain language why each is worth pursuing.
 """
 
 
@@ -957,8 +945,131 @@ def make_pdf_plots(convs: list, paired_conv) -> dict[str, bytes]:
                         c=labels, cmap="tab10", s=18, alpha=0.65)
         plt.colorbar(sc, ax=ax, label="Conv #", shrink=0.85)
         ax.set_xlabel("PC1"); ax.set_ylabel("PC2")
-        ax.set_title("Stationary Distribution — All Turns in PCA Space")
+        ax.set_title("Stationary Distribution - All Turns in PCA Space")
         plots["stationary"] = _save(fig)
+    except Exception:
+        pass
+
+    # 7 — Kernel residual & variance histogram
+    try:
+        kv = estimate_kernel_variance(all_emb)
+        if kv is not None:
+            fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+            axes[0].hist(kv["residuals"], bins=20, color="steelblue", alpha=0.8,
+                         edgecolor="white")
+            axes[0].axvline(kv["mean_residual"], color="red", lw=2,
+                            label=f"Mean = {kv['mean_residual']:.4f}")
+            axes[0].set_xlabel("Cosine Distance"); axes[0].set_ylabel("Count")
+            axes[0].set_title("Prediction Residuals (how far off is g(E)?)")
+            axes[0].legend(fontsize=9)
+
+            axes[1].hist(kv["variances"], bins=20, color="coral", alpha=0.8,
+                         edgecolor="white")
+            axes[1].axvline(kv["mean_variance"], color="darkred", lw=2,
+                            label=f"Mean sigma^2 = {kv['mean_variance']:.4f}")
+            axes[1].set_xlabel("Cosine Distance"); axes[1].set_ylabel("Count")
+            axes[1].set_title("Conditional Variance sigma^2(E) Distribution")
+            axes[1].legend(fontsize=9)
+            fig.suptitle("Kernel Estimation: Residuals and Conditional Variance",
+                         fontsize=11, fontweight="bold")
+            plt.tight_layout()
+            plots["kernel_hist"] = _save(fig)
+    except Exception:
+        pass
+
+    # 8 — Markov test bar chart
+    try:
+        mr = markov_test(all_emb)
+        if mr is not None:
+            fig, ax = plt.subplots(figsize=(6, 4.5))
+            bars = ax.bar(
+                ["1-step predictor\n(current turn only)",
+                 "2-step predictor\n(current + previous turn)"],
+                [mr["err_1step"], mr["err_2step"]],
+                color=["steelblue", "coral"], width=0.45,
+                edgecolor="white", linewidth=1.2,
+            )
+            for bar, val in zip(bars, [mr["err_1step"], mr["err_2step"]]):
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + 0.001, f"{val:.4f}",
+                        ha="center", va="bottom", fontsize=10)
+            ax.set_ylabel("Mean Prediction Error (cosine distance)")
+            ax.set_title(
+                f"Markov Test: Does History Help?\n"
+                f"Improvement from adding history: {mr['improvement_pct']:.1f}%"
+            )
+            ax.set_ylim(0, max(mr["err_1step"], mr["err_2step"]) * 1.2)
+            plt.tight_layout()
+            plots["markov_bar"] = _save(fig)
+    except Exception:
+        pass
+
+    # 9 — Baseline step-distance comparison (3 series)
+    try:
+        shuf_emb  = shuffled_baseline(convs)
+        noise_emb = noise_baseline(convs)
+        real_d    = np.concatenate([step_cosine_distances(e) for e in all_emb])
+        shuf_d    = np.concatenate([step_cosine_distances(e) for e in shuf_emb])
+        noise_d   = np.concatenate([step_cosine_distances(e) for e in noise_emb])
+
+        fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+
+        # Histogram overlay
+        kws = dict(bins=25, alpha=0.65, edgecolor="white", density=True)
+        axes[0].hist(real_d,  label=f"Real (mean={real_d.mean():.3f})",
+                     color="steelblue", **kws)
+        axes[0].hist(shuf_d,  label=f"Shuffled (mean={shuf_d.mean():.3f})",
+                     color="coral", **kws)
+        axes[0].hist(noise_d, label=f"Random walk (mean={noise_d.mean():.3f})",
+                     color="seagreen", **kws)
+        axes[0].set_xlabel("Cosine Distance"); axes[0].set_ylabel("Density")
+        axes[0].set_title("Step-Distance Distributions")
+        axes[0].legend(fontsize=8)
+
+        # Mean + std bar chart
+        groups = ["Real", "Shuffled", "Random walk"]
+        means  = [real_d.mean(), shuf_d.mean(), noise_d.mean()]
+        stds   = [real_d.std(),  shuf_d.std(),  noise_d.std()]
+        colors = ["steelblue", "coral", "seagreen"]
+        x = np.arange(len(groups))
+        axes[1].bar(x, means, yerr=stds, color=colors, width=0.5,
+                    capsize=5, edgecolor="white")
+        axes[1].set_xticks(x); axes[1].set_xticklabels(groups)
+        axes[1].set_ylabel("Mean Step Distance (+/- std)")
+        axes[1].set_title("Mean Step Distance by Dataset")
+        fig.suptitle("Baseline Comparison: Step Distances",
+                     fontsize=11, fontweight="bold")
+        plt.tight_layout()
+        plots["baseline_steps"] = _save(fig)
+    except Exception:
+        pass
+
+    # 10 — Baseline sigma^2 comparison bar chart
+    try:
+        shuf_emb = shuffled_baseline(convs)
+        noise_emb = noise_baseline(convs)
+        kv_real  = estimate_kernel_variance(all_emb)
+        kv_shuf  = estimate_kernel_variance(shuf_emb)
+        kv_noise = estimate_kernel_variance(noise_emb)
+        if kv_real and kv_shuf and kv_noise:
+            fig, ax = plt.subplots(figsize=(6.5, 4.5))
+            labels_b = ["Real\nconversations", "Shuffled\n(null)", "Random walk\n(null)"]
+            vals_res = [kv_real["mean_residual"], kv_shuf["mean_residual"],
+                        kv_noise["mean_residual"]]
+            vals_var = [kv_real["mean_variance"], kv_shuf["mean_variance"],
+                        kv_noise["mean_variance"]]
+            x = np.arange(len(labels_b))
+            w = 0.35
+            ax.bar(x - w/2, vals_res, w, label="Prediction residual",
+                   color="steelblue", alpha=0.85, edgecolor="white")
+            ax.bar(x + w/2, vals_var, w, label="Cond. variance sigma^2",
+                   color="coral",     alpha=0.85, edgecolor="white")
+            ax.set_xticks(x); ax.set_xticklabels(labels_b)
+            ax.set_ylabel("Cosine Distance")
+            ax.set_title("Baseline Comparison: Prediction Residual and sigma^2(E)")
+            ax.legend(fontsize=9)
+            plt.tight_layout()
+            plots["baseline_variance"] = _save(fig)
     except Exception:
         pass
 
@@ -971,6 +1082,39 @@ def build_pdf_report(analysis_text: str, metrics: dict,
     import datetime, tempfile
     from fpdf import FPDF
 
+    # ── Unicode sanitiser ─────────────────────────────────────────────────────
+    _CHAR_MAP = {
+        "\u2014": "--", "\u2013": "-", "\u2012": "-", "\u2010": "-", "\u2011": "-",
+        "\u2018": "'",  "\u2019": "'", "\u201a": ",", "\u201b": "'",
+        "\u201c": '"',  "\u201d": '"', "\u201e": '"',
+        "\u2026": "...", "\u2022": "*", "\u2023": ">",
+        "\u00b2": "^2", "\u00b3": "^3", "\u00b9": "^1",
+        "\u2070": "^0", "\u2071": "^i", "\u2074": "^4", "\u2075": "^5",
+        "\u2076": "^6", "\u2077": "^7", "\u2078": "^8", "\u2079": "^9",
+        "\u207f": "^n", "\u2081": "_1", "\u2082": "_2", "\u2083": "_3",
+        "\u03c3": "sigma", "\u03a3": "Sigma",
+        "\u03bb": "lambda", "\u039b": "Lambda",
+        "\u03bc": "mu",    "\u03b5": "epsilon",
+        "\u03c0": "pi",    "\u03a0": "Pi",
+        "\u03b1": "alpha", "\u03b2": "beta",
+        "\u03b3": "gamma", "\u03b4": "delta",
+        "\u221e": "inf",   "\u2248": "~=",
+        "\u2260": "!=",    "\u2264": "<=",   "\u2265": ">=",
+        "\u00d7": "x",     "\u00f7": "/",    "\u00b1": "+/-",
+        "\u2192": "->",    "\u2190": "<-",   "\u2194": "<->",
+        "\u2191": "(up)",  "\u2193": "(down)",
+        "\u2713": "[ok]",  "\u2717": "[x]",
+        "\u00b0": "deg",   "\u00b7": ".",
+        "\u2014": "--",    "\u00e9": "e",    "\u00e8": "e",
+        "\u00ea": "e",     "\u00eb": "e",
+    }
+
+    def _s(text: str) -> str:
+        """Return a Latin-1-safe version of text for fpdf core fonts."""
+        for ch, rep in _CHAR_MAP.items():
+            text = text.replace(ch, rep)
+        return text.encode("latin-1", errors="replace").decode("latin-1")
+
     class ReportPDF(FPDF):
         def header(self):
             if self.page_no() == 1:
@@ -978,7 +1122,7 @@ def build_pdf_report(analysis_text: str, metrics: dict,
             self.set_font("Helvetica", "I", 8)
             self.set_text_color(140, 140, 140)
             self.cell(0, 7,
-                      "Conversational Dynamics in Embedding Space — Analysis Report",
+                      "Conversational Dynamics in Embedding Space - Analysis Report",
                       align="R")
             self.set_draw_color(200, 200, 200)
             self.line(10, self.get_y() + 1, 200, self.get_y() + 1)
@@ -989,23 +1133,25 @@ def build_pdf_report(analysis_text: str, metrics: dict,
             self.set_font("Helvetica", "I", 8)
             self.set_text_color(150, 150, 150)
             self.cell(0, 8,
-                      f"Page {self.page_no()}  ·  Generated {datetime.date.today()}",
+                      f"Page {self.page_no()}  |  Generated {datetime.date.today()}",
                       align="C")
 
     pdf = ReportPDF()
     pdf.set_auto_page_break(auto=True, margin=20)
     pdf.add_page()
 
-    # ── Cover ────────────────────────────────────────────────────────────────
+    # ── Cover ─────────────────────────────────────────────────────────────────
     pdf.ln(10)
     pdf.set_font("Helvetica", "B", 22)
     pdf.set_text_color(25, 25, 90)
     pdf.multi_cell(0, 12, "Conversational Dynamics\nin Embedding Space", align="C")
     pdf.set_font("Helvetica", "", 13)
     pdf.set_text_color(80, 80, 80)
-    pdf.cell(0, 8, "Proof-of-Concept Study — Analysis Report", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 8, "Proof-of-Concept Study - Analysis Report",
+             align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, f"Generated: {datetime.date.today()}", align="C", new_x="LMARGIN", new_y="NEXT")
+    pdf.cell(0, 6, f"Generated: {datetime.date.today()}",
+             align="C", new_x="LMARGIN", new_y="NEXT")
     pdf.ln(10)
 
     # ── Config box ────────────────────────────────────────────────────────────
@@ -1019,54 +1165,56 @@ def build_pdf_report(analysis_text: str, metrics: dict,
                         ("Encoder", "encoder"), ("Conversations", "n_conversations"),
                         ("Avg turns", "n_turns_avg")]:
         pdf.cell(58, 6, f"    {label}:", border=0)
-        pdf.cell(0, 6, str(metrics.get(key, "N/A")), new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 6, _s(str(metrics.get(key, "N/A"))),
+                 new_x="LMARGIN", new_y="NEXT")
     pdf.ln(6)
 
     # ── Metrics table ─────────────────────────────────────────────────────────
     pdf.set_fill_color(237, 237, 255)
     pdf.set_font("Helvetica", "B", 11)
     pdf.set_text_color(25, 25, 90)
-    pdf.cell(0, 8, "  Measured Results Summary", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.cell(0, 8, "  Measured Results Summary",
+             new_x="LMARGIN", new_y="NEXT", fill=True)
 
     rows = [
         # (label, value, is_section_header)
         ("Kernel Estimation", "", True),
-        ("Mean prediction residual",        metrics.get("mean_residual", "N/A"),     False),
-        ("Mean conditional variance σ²(E)", metrics.get("mean_variance", "N/A"),     False),
-        ("Framework quality",               metrics.get("framework_quality", "N/A"), False),
+        ("Mean prediction residual",          metrics.get("mean_residual", "N/A"),      False),
+        ("Mean conditional variance sigma^2", metrics.get("mean_variance", "N/A"),      False),
+        ("Framework quality",                 metrics.get("framework_quality", "N/A"),  False),
         ("Markov Approximation Test", "", True),
-        ("1-step prediction error",         metrics.get("err_1step", "N/A"),         False),
-        ("2-step prediction error",         metrics.get("err_2step", "N/A"),         False),
-        ("History improvement",             f"{metrics.get('improvement_pct','N/A')}%", False),
+        ("1-step prediction error",           metrics.get("err_1step", "N/A"),          False),
+        ("2-step prediction error",           metrics.get("err_2step", "N/A"),          False),
+        ("History improvement",               f"{metrics.get('improvement_pct','N/A')}%", False),
         ("Lyapunov Exponent", "", True),
-        ("Estimated λ",                     metrics.get("lyapunov", "N/A"),          False),
-        ("Direction",                       metrics.get("lyapunov_dir", "N/A"),      False),
+        ("Estimated lambda",                  metrics.get("lyapunov", "N/A"),           False),
+        ("Direction",                         metrics.get("lyapunov_dir", "N/A"),       False),
         ("Stationary Distribution", "", True),
-        ("PCA variance explained (top-3)",  metrics.get("pca_var", "N/A"),           False),
-        ("Spread — std in PCA space",       metrics.get("pca_std", "N/A"),           False),
-        ("Mean pairwise cosine dist",       metrics.get("mean_pw_dist", "N/A"),      False),
+        ("PCA variance explained (top-3)",    metrics.get("pca_var", "N/A"),            False),
+        ("Spread - std in PCA space",         metrics.get("pca_std", "N/A"),            False),
+        ("Mean pairwise cosine dist",         metrics.get("mean_pw_dist", "N/A"),       False),
         ("DMD Spectrum", "", True),
-        ("Modes near unit circle",          metrics.get("dmd_near_circle", "N/A"),   False),
-        ("Mean |λ|",                        metrics.get("dmd_mean_mag", "N/A"),      False),
-        ("Dominant frequency (cyc/turn)",   metrics.get("dmd_dom_freq", "N/A"),      False),
+        ("Modes near unit circle",            metrics.get("dmd_near_circle", "N/A"),    False),
+        ("Mean eigenvalue magnitude",         metrics.get("dmd_mean_mag", "N/A"),       False),
+        ("Dominant frequency (cyc/turn)",     metrics.get("dmd_dom_freq", "N/A"),       False),
         ("Baselines", "", True),
-        ("Real  — mean step dist",          metrics.get("real_step_mean", "N/A"),    False),
-        ("Shuffled null — mean step dist",  metrics.get("shuf_step_mean", "N/A"),    False),
-        ("Random walk — mean step dist",    metrics.get("noise_step_mean", "N/A"),   False),
-        ("Real σ²  vs  Shuffled σ²",
-         f"{metrics.get('real_var','N/A')}  vs  {metrics.get('shuf_var','N/A')}",    False),
+        ("Real - mean step dist",             metrics.get("real_step_mean", "N/A"),     False),
+        ("Shuffled null - mean step dist",    metrics.get("shuf_step_mean", "N/A"),     False),
+        ("Random walk - mean step dist",      metrics.get("noise_step_mean", "N/A"),    False),
+        ("Real sigma^2 vs Shuffled sigma^2",
+         f"{metrics.get('real_var','N/A')} vs {metrics.get('shuf_var','N/A')}",          False),
     ]
     for label, value, is_hdr in rows:
         if is_hdr:
             pdf.set_fill_color(215, 215, 240)
             pdf.set_font("Helvetica", "B", 9)
             pdf.set_text_color(25, 25, 90)
-            pdf.cell(0, 6, f"  {label}", new_x="LMARGIN", new_y="NEXT", fill=True)
+            pdf.cell(0, 6, f"  {_s(label)}", new_x="LMARGIN", new_y="NEXT", fill=True)
             pdf.set_font("Helvetica", "", 9)
             pdf.set_text_color(40, 40, 40)
         else:
-            pdf.cell(125, 5.5, f"    {label}", border="B")
-            pdf.cell(0,   5.5, value,          border="B",
+            pdf.cell(125, 5.5, f"    {_s(label)}", border="B")
+            pdf.cell(0,   5.5, _s(str(value)),     border="B",
                      new_x="LMARGIN", new_y="NEXT")
     pdf.ln(6)
 
@@ -1075,48 +1223,128 @@ def build_pdf_report(analysis_text: str, metrics: dict,
     pdf.set_fill_color(237, 237, 255)
     pdf.set_font("Helvetica", "B", 13)
     pdf.set_text_color(25, 25, 90)
-    pdf.cell(0, 9, "  LLM Analysis of Results", new_x="LMARGIN", new_y="NEXT", fill=True)
+    pdf.cell(0, 9, "  LLM Analysis of Results",
+             new_x="LMARGIN", new_y="NEXT", fill=True)
     pdf.ln(3)
 
+    _plain_terms_next = False
     pdf.set_text_color(30, 30, 30)
     for raw in analysis_text.split("\n"):
         line = raw.rstrip()
         if not line:
             pdf.ln(2)
+            _plain_terms_next = False
         elif line.startswith("## "):
             pdf.ln(3)
             pdf.set_font("Helvetica", "B", 11)
             pdf.set_text_color(25, 25, 90)
-            pdf.multi_cell(0, 7, line[3:])
+            pdf.multi_cell(0, 7, _s(line[3:]))
             pdf.set_font("Helvetica", "", 10)
             pdf.set_text_color(30, 30, 30)
         elif line.startswith("### "):
             pdf.set_font("Helvetica", "B", 10)
-            pdf.multi_cell(0, 6, line[4:])
+            pdf.multi_cell(0, 6, _s(line[4:]))
             pdf.set_font("Helvetica", "", 10)
-        elif line.startswith(("- ", "* ", "• ")):
-            pdf.multi_cell(0, 5.5, f"  \u2022 {line[2:]}")
+        elif line.lower().startswith(("**in plain terms", "in plain terms")):
+            # Highlight the "In plain terms" callout box
+            pdf.ln(1)
+            pdf.set_fill_color(255, 248, 220)
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.set_text_color(100, 70, 0)
+            clean = _s(line.replace("**", "").strip())
+            pdf.multi_cell(0, 6, f"  {clean}", fill=True)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_text_color(30, 30, 30)
+            _plain_terms_next = True
+        elif _plain_terms_next and line.strip():
+            # Body of the plain-terms box
+            pdf.set_fill_color(255, 252, 235)
+            pdf.set_text_color(80, 60, 0)
+            pdf.multi_cell(0, 5.5, _s(f"  {line.replace('**','')}"), fill=True)
+            pdf.set_text_color(30, 30, 30)
+        elif line.startswith(("- ", "* ", "* ")):
+            pdf.multi_cell(0, 5.5, _s(f"  * {line[2:]}"))
         else:
-            # Strip inline ** bold markers (fpdf2 doesn't render markdown)
-            clean = line.replace("**", "")
+            clean = _s(line.replace("**", ""))
             pdf.multi_cell(0, 5.5, clean)
 
-    # ── Figures ───────────────────────────────────────────────────────────────
+    # ── Figures with captions ─────────────────────────────────────────────────
     figure_meta = [
-        ("trajectory",    "Figure 1: Embedding Trajectory in PCA Space",         190, 95),
-        ("step_distances","Figure 2: Step Distances Between Consecutive Turns",   190, 85),
-        ("recurrence",    "Figure 3: Recurrence Plot — Conversation 1",           120, 100),
-        ("dmd",           "Figure 4: DMD Eigenvalue Spectrum",                    110, 105),
-        ("lyapunov",      "Figure 5: Lyapunov Exponent Analysis",                 190, 82),
-        ("stationary",    "Figure 6: Stationary Distribution in PCA Space",       140, 108),
+        ("trajectory",       "Figure 1: Embedding Trajectory in PCA Space",
+         "Each conversation is shown as a path through a 2D slice of the high-dimensional "
+         "meaning space. Stars mark starting points. Tight, looping paths suggest "
+         "the conversation circles familiar ideas; sprawling paths suggest broad exploration.",
+         190, 95),
+
+        ("step_distances",   "Figure 2: Step Distances Between Consecutive Turns",
+         "Each point shows how far (in meaning space) one turn is from the next. "
+         "High values mean the topic shifted sharply; low values mean the reply stayed "
+         "close to what was just said.",
+         190, 85),
+
+        ("kernel_hist",      "Figure 3: Kernel Estimation -- Residuals and Conditional Variance",
+         "Left: how far the model's best prediction of the next turn is from the actual next "
+         "turn (lower = better). Right: how spread out the possible next turns are given the "
+         "current position (sigma^2). Small sigma^2 means the framework is reliable.",
+         190, 85),
+
+        ("markov_bar",       "Figure 4: Markov Test -- Does Knowing History Help?",
+         "Compares how well two predictors forecast the next turn: one that only sees the "
+         "current turn, and one that also sees the previous turn. A big gap means "
+         "the conversation has memory -- where it came from matters.",
+         140, 100),
+
+        ("recurrence",       "Figure 5: Recurrence Plot -- Conversation 1",
+         "A heatmap where darker colours mean two turns were similar in meaning. "
+         "Diagonal stripes suggest repeating patterns; scattered colour suggests "
+         "the conversation kept moving to new territory.",
+         120, 105),
+
+        ("dmd",              "Figure 6: DMD Eigenvalue Spectrum",
+         "Each dot represents a recurring pattern (mode) extracted from the conversation. "
+         "Dots on the unit circle (dashed ring) represent stable oscillations -- "
+         "ideas the conversation kept returning to rhythmically.",
+         110, 108),
+
+        ("lyapunov",         "Figure 7: Lyapunov Exponent Analysis",
+         "Tracks how far apart two conversations started from nearly identical prompts "
+         "diverge over time. A rising line (lambda > 0) means small differences snowball; "
+         "a falling line (lambda < 0) means conversations converge to the same territory.",
+         190, 82),
+
+        ("stationary",       "Figure 8: Stationary Distribution -- All Turns",
+         "Shows where all conversation turns land in compressed 2D space. "
+         "A tight cluster indicates the conversation gravitates to a narrow region "
+         "(mode collapse); a spread-out cloud indicates diverse, exploratory dynamics.",
+         140, 108),
+
+        ("baseline_steps",   "Figure 9: Baseline Comparison -- Step Distances",
+         "Compares how far each turn moves in meaning space for real conversations "
+         "versus two null models: randomly shuffled turns and a pure random walk. "
+         "Differences reveal genuine temporal structure.",
+         190, 88),
+
+        ("baseline_variance","Figure 10: Baseline Comparison -- Prediction Error and sigma^2",
+         "Side-by-side comparison of prediction error and conditional variance across "
+         "real conversations, shuffled data, and the random walk. If real conversations "
+         "show lower sigma^2 than shuffled data, there is genuine predictable structure.",
+         170, 90),
     ]
-    for key, caption, w, h in figure_meta:
+
+    for key, caption, description, w, h in figure_meta:
         if key not in plot_bytes:
             continue
         pdf.add_page()
+        # Caption
         pdf.set_font("Helvetica", "B", 10)
-        pdf.set_text_color(60, 60, 60)
-        pdf.cell(0, 7, caption, new_x="LMARGIN", new_y="NEXT")
+        pdf.set_text_color(40, 40, 100)
+        pdf.multi_cell(0, 7, _s(caption))
+        # Plain-language description
+        pdf.set_font("Helvetica", "I", 9)
+        pdf.set_text_color(80, 80, 80)
+        pdf.multi_cell(0, 5.5, _s(description))
+        pdf.ln(3)
+        # Image
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
             tmp.write(plot_bytes[key])
             tmp_path = tmp.name
